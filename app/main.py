@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
@@ -10,7 +10,12 @@ from .routers import auth, candidate, recruiter, reports
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    app.state.database_ready = False
+    try:
+        init_db()
+        app.state.database_ready = True
+    except Exception as exc:
+        print(f"Database initialization failed: {exc}", flush=True)
     yield
 
 
@@ -42,5 +47,10 @@ def root():
 
 
 @app.get("/health")
-def health():
-    return {"status": "ok", "service": "ai-human-interview-platform"}
+def health(request: Request):
+    database_ready = getattr(request.app.state, "database_ready", False)
+    return {
+        "status": "ok" if database_ready else "degraded",
+        "service": "ai-human-interview-platform",
+        "database": "ok" if database_ready else "unavailable",
+    }

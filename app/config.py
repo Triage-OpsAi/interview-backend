@@ -1,12 +1,18 @@
+import os
 from pathlib import Path
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+RUNNING_ON_VERCEL = os.getenv("VERCEL") == "1"
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = BACKEND_DIR.parent
-LOCAL_STORAGE_DIR = BACKEND_DIR / "storage"
+LOCAL_STORAGE_DIR = Path(
+    os.getenv("LOCAL_STORAGE_DIR")
+    or ("/tmp/interview-backend-storage" if RUNNING_ON_VERCEL else BACKEND_DIR / "storage")
+)
+DEFAULT_DATABASE_URL = "sqlite:////tmp/interview_agent.db" if RUNNING_ON_VERCEL else "sqlite:///./interview_agent.db"
 
 
 class Settings(BaseSettings):
@@ -17,7 +23,7 @@ class Settings(BaseSettings):
     )
 
     app_secret: str = "change-me-in-production"
-    database_url: str = "sqlite:///./interview_agent.db"
+    database_url: str = DEFAULT_DATABASE_URL
     cors_origins: str = "*"
     frontend_base_url: str = "http://127.0.0.1:3000"
 
@@ -50,6 +56,13 @@ class Settings(BaseSettings):
     otp_expiry_minutes: int = 10
     candidate_session_expiry_hours: int = 6
     max_interview_questions: int = 10
+
+    @field_validator("database_url")
+    @classmethod
+    def normalize_database_url(cls, value: str) -> str:
+        if value.startswith("postgres://"):
+            return "postgresql://" + value.removeprefix("postgres://")
+        return value
 
 
 settings = Settings()
