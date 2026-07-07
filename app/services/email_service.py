@@ -1,0 +1,122 @@
+import smtplib
+from email.message import EmailMessage
+from typing import Optional
+
+from sqlmodel import Session
+
+from ..config import settings
+from ..models import Candidate, EmailLog, JobDescription
+from ..security import utcnow
+
+
+def invitation_template(candidate: Candidate, job: JobDescription, magic_link: str) -> tuple[str, str]:
+    subject = f"Interview invitation for {job.job_title} at {job.company_name}"
+    body = f"""Hi {candidate.full_name},
+
+You have been invited to complete an AI human interviewer screening for the {job.job_title} role at {job.company_name}.
+
+Open your secure magic link to begin:
+{magic_link}
+
+For security, you will receive a one-time password after opening the link.
+
+Best,
+Hiring Team
+"""
+    return subject, body
+
+
+def otp_template(candidate: Candidate, otp: str) -> tuple[str, str]:
+    subject = "Your interview verification OTP"
+    body = f"""Hi {candidate.full_name},
+
+Your one-time password for the interview is:
+
+{otp}
+
+This OTP expires shortly. If you did not request this, ignore this email.
+
+Best,
+Hiring Team
+"""
+    return subject, body
+
+
+def next_round_template(candidate: Candidate, job: JobDescription) -> tuple[str, str]:
+    subject = f"Next round for {job.job_title}"
+    body = f"""Hi {candidate.full_name},
+
+Congratulations. Based on your interview for the {job.job_title} role at {job.company_name}, we would like to move you to the next round.
+
+Our hiring team will contact you with the next steps.
+
+Best,
+Hiring Team
+"""
+    return subject, body
+
+
+def rejection_template(candidate: Candidate, job: JobDescription) -> tuple[str, str]:
+    subject = f"Update on your {job.job_title} application"
+    body = f"""Hi {candidate.full_name},
+
+Thank you for taking the time to interview for the {job.job_title} role at {job.company_name}.
+
+After careful review, we will not be moving forward at this stage. We appreciate your interest and wish you the best in your search.
+
+Best,
+Hiring Team
+"""
+    return subject, body
+
+
+def send_email(
+    session: Session,
+    *,
+    recipient_email: str,
+    subject: str,
+    body: str,
+    email_type: str,
+    candidate_id: Optional[str] = None,
+    job_id: Optional[str] = None,
+) -> EmailLog:
+    status = "logged"
+    error_message = None
+    sent_at = None
+
+    if settings.smtp_host:
+        try:
+            message = EmailMessage()
+            message["From"] = settings.smtp_from_email
+            message["To"] = recipient_email
+            message["Subject"] = subject
+            message.set_content(body)
+
+            with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
+                if settings.smtp_use_tls:
+                    smtp.starttls()
+                if settings.smtp_username:
+                    smtp.login(settings.smtp_username, settings.smtp_password)
+                smtp.send_message(message)
+
+            status = "sent"
+            sent_at = utcnow()
+        except Exception as exc:
+            status = "failed"
+            error_message = str(exc)
+
+    log = EmailLog(
+        candidate_id=candidate_id,
+        job_id=job_id,
+        email_type=email_type,
+        recipient_email=recipient_email,
+        subject=subject,
+        body=body,
+        status=status,
+        error_message=error_message,
+        sent_at=sent_at,
+    )
+    session.add(log)
+    session.commit()
+    session.refresh(log)
+    return log
