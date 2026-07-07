@@ -35,6 +35,12 @@ app.include_router(recruiter.router)
 app.include_router(candidate.router)
 app.include_router(reports.router)
 
+
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "ai-human-interview-platform"}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "ai-human-interview-platform"}
