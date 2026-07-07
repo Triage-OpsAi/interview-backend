@@ -204,12 +204,13 @@ def conduct_interviews(
         session.commit()
         session.refresh(link)
 
-        subject, body = invitation_template(candidate, job, magic_link)
+        subject, body, html_body = invitation_template(candidate, job, magic_link)
         email_log = send_email(
             session,
             recipient_email=candidate.email,
             subject=subject,
             body=body,
+            html_body=html_body,
             email_type="interview_invitation",
             candidate_id=candidate.id,
             job_id=job.id,
