@@ -31,6 +31,15 @@ VALID_CANDIDATE_STATUSES = {
 }
 
 
+def _frontend_base_url() -> str:
+    base_url = settings.frontend_base_url.strip().strip("'\"").rstrip("/")
+    if not base_url:
+        return "http://127.0.0.1:3000"
+    if base_url.startswith(("http://", "https://")):
+        return base_url
+    return f"https://{base_url}"
+
+
 def _job_or_404(session: Session, job_id: str, user: User) -> JobDescription:
     job = session.get(JobDescription, job_id)
     if not job or job.created_by != user.id:
@@ -179,7 +188,7 @@ def conduct_interviews(
         candidate = _candidate_or_404(session, candidate_id, job_id, user)
         token = generate_token()
         expires_at = expires_in(hours=settings.magic_link_expiry_hours)
-        magic_link = f"{settings.frontend_base_url.rstrip('/')}/candidate?token={token}"
+        magic_link = f"{_frontend_base_url()}/candidate?token={token}"
         link = InterviewLink(
             candidate_id=candidate.id,
             job_id=job.id,

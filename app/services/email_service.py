@@ -1,3 +1,5 @@
+import html
+import re
 import smtplib
 from email.message import EmailMessage
 from typing import Optional
@@ -7,6 +9,31 @@ from sqlmodel import Session
 from ..config import settings
 from ..models import Candidate, EmailLog, JobDescription
 from ..security import utcnow
+
+URL_PATTERN = re.compile(r"https?://[^\s<]+")
+
+
+def _linkify_html(text: str) -> str:
+    parts = []
+    last_index = 0
+    for match in URL_PATTERN.finditer(text):
+        url = match.group(0)
+        parts.append(html.escape(text[last_index : match.start()]))
+        escaped_url = html.escape(url, quote=True)
+        parts.append(f'<a href="{escaped_url}">{escaped_url}</a>')
+        last_index = match.end()
+    parts.append(html.escape(text[last_index:]))
+    return "".join(parts)
+
+
+def _html_email_body(body: str) -> str:
+    content = _linkify_html(body).replace("\n", "<br>\n")
+    return f"""<!doctype html>
+<html>
+<body style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
+{content}
+</body>
+</html>"""
 
 
 def invitation_template(candidate: Candidate, job: JobDescription, magic_link: str) -> tuple[str, str]:
@@ -91,6 +118,7 @@ def send_email(
             message["To"] = recipient_email
             message["Subject"] = subject
             message.set_content(body)
+            message.add_alternative(_html_email_body(body), subtype="html")
 
             with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
                 if settings.smtp_use_tls:
