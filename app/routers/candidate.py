@@ -123,11 +123,101 @@ def _get_or_create_interview(session: Session, link: InterviewLink) -> Interview
     return interview
 
 
-def _finalize_interview(session: Session, interview: Interview) -> InterviewReport:
-    existing = session.exec(select(InterviewReport).where(InterviewReport.interview_id == interview.id)).first()
-    if existing:
-        return existing
+def _score_rows_from_report_data(
+    session: Session,
+    *,
+    report: InterviewReport,
+    interview: Interview,
+    candidate: Candidate,
+    report_data: dict,
+) -> tuple[list[int], float, float]:
+    score_values = []
+    weighted_total = 0.0
+    weight_total = 0.0
+    existing_scores = session.exec(select(CandidateScore).where(CandidateScore.report_id == report.id)).all()
+    existing_by_category = {item.category: item for item in existing_scores}
+    for item in report_data.get("scores", []) or []:
+        try:
+            score = max(1, min(10, int(item.get("score", 1))))
+        except (TypeError, ValueError):
+            score = 1
+        try:
+            weight = float(item.get("weight", 0) or 0)
+        except (TypeError, ValueError):
+            weight = 0
+        score_values.append(score)
+        if weight > 0:
+            weighted_total += score * weight
+            weight_total += weight
+        category = item.get("category", "Uncategorized")
+        reasoning = f"Weight {int(weight * 100)}%. {item.get('reasoning')}" if weight else item.get("reasoning")
+        existing = existing_by_category.get(category)
+        if existing:
+            existing.score = score
+            existing.reasoning = reasoning
+            session.add(existing)
+        else:
+            session.add(
+                CandidateScore(
+                    report_id=report.id,
+                    interview_id=interview.id,
+                    candidate_id=candidate.id,
+                    category=category,
+                    score=score,
+                    reasoning=reasoning,
+                )
+            )
+    return score_values, weighted_total, weight_total
 
+
+def _complete_interview_state(
+    session: Session,
+    *,
+    interview: Interview,
+    candidate: Candidate,
+    job: JobDescription,
+    report: InterviewReport,
+    report_data: Optional[dict] = None,
+) -> InterviewReport:
+    if report_data:
+        score_values, weighted_total, weight_total = _score_rows_from_report_data(
+            session,
+            report=report,
+            interview=interview,
+            candidate=candidate,
+            report_data=report_data,
+        )
+    else:
+        existing_scores = session.exec(select(CandidateScore).where(CandidateScore.report_id == report.id)).all()
+        score_values = [score.score for score in existing_scores]
+        weighted_total = 0.0
+        weight_total = 0.0
+
+    interview.status = "completed"
+    interview.completed_at = interview.completed_at or utcnow()
+    if interview.started_at:
+        interview.duration_seconds = elapsed_seconds(interview.started_at, interview.completed_at)
+    if report_data and report_data.get("overall_score") is not None:
+        try:
+            interview.overall_score = max(0, min(100, int(report_data["overall_score"])))
+        except (TypeError, ValueError):
+            pass
+    if interview.overall_score is None and weight_total:
+        interview.overall_score = int(round((weighted_total / weight_total) * 10))
+    elif interview.overall_score is None and score_values:
+        interview.overall_score = int(round((sum(score_values) / len(score_values)) * 10))
+
+    candidate.status = "Interview Completed"
+    candidate.updated_at = utcnow()
+    session.add(interview)
+    session.add(candidate)
+    log_activity(session, action="interview_completed", candidate_id=candidate.id, job_id=job.id, details=interview.id)
+    session.commit()
+    session.refresh(report)
+    return report
+
+
+def _finalize_interview(session: Session, interview: Interview) -> InterviewReport:
     candidate = session.get(Candidate, interview.candidate_id)
     job = session.get(JobDescription, interview.job_id)
     if not candidate or not job:
@@ -136,6 +226,37 @@ def _finalize_interview(session: Session, interview: Interview) -> InterviewRepo
     profile = _profile(session, candidate.id)
     resume = _latest_resume(session, candidate.id)
     transcripts = _transcripts(session, interview.id)
+    existing = session.exec(select(InterviewReport).where(InterviewReport.interview_id == interview.id)).first()
+
+    if existing:
+        scores = session.exec(select(CandidateScore).where(CandidateScore.report_id == existing.id)).all()
+        report_data = None
+        if not scores or interview.overall_score is None:
+            report_data = ai_interviewer.generate_report(
+                candidate=candidate,
+                job=job,
+                profile=profile,
+                resume=resume,
+                transcripts=transcripts,
+            )
+            existing.summary = existing.summary or report_data.get("summary", "")
+            existing.strengths = existing.strengths or report_data.get("strengths", "")
+            existing.weaknesses = existing.weaknesses or report_data.get("weaknesses", "")
+            existing.key_observations = existing.key_observations or report_data.get("key_observations", "")
+            existing.technical_assessment = existing.technical_assessment or report_data.get("technical_assessment", "")
+            existing.behavioral_assessment = existing.behavioral_assessment or report_data.get("behavioral_assessment", "")
+            existing.recommendation = existing.recommendation or report_data.get("recommendation", "Borderline")
+            existing.recommendation_reason = existing.recommendation_reason or report_data.get("recommendation_reason", "")
+            session.add(existing)
+        return _complete_interview_state(
+            session,
+            interview=interview,
+            candidate=candidate,
+            job=job,
+            report=existing,
+            report_data=report_data,
+        )
+
     report_data = ai_interviewer.generate_report(
         candidate=candidate,
         job=job,
@@ -161,54 +282,14 @@ def _finalize_interview(session: Session, interview: Interview) -> InterviewRepo
     session.commit()
     session.refresh(report)
 
-    score_values = []
-    weighted_total = 0.0
-    weight_total = 0.0
-    for item in report_data.get("scores", []):
-        try:
-            score = max(1, min(10, int(item.get("score", 1))))
-        except (TypeError, ValueError):
-            score = 1
-        try:
-            weight = float(item.get("weight", 0) or 0)
-        except (TypeError, ValueError):
-            weight = 0
-        score_values.append(score)
-        if weight > 0:
-            weighted_total += score * weight
-            weight_total += weight
-        session.add(
-            CandidateScore(
-                report_id=report.id,
-                interview_id=interview.id,
-                candidate_id=candidate.id,
-                category=item.get("category", "Uncategorized"),
-                score=score,
-                reasoning=f"Weight {int(weight * 100)}%. {item.get('reasoning')}" if weight else item.get("reasoning"),
-            )
-        )
-
-    interview.status = "completed"
-    interview.completed_at = utcnow()
-    if interview.started_at:
-        interview.duration_seconds = elapsed_seconds(interview.started_at, interview.completed_at)
-    if report_data.get("overall_score") is not None:
-        try:
-            interview.overall_score = max(0, min(100, int(report_data["overall_score"])))
-        except (TypeError, ValueError):
-            interview.overall_score = None
-    if interview.overall_score is None and weight_total:
-        interview.overall_score = int(round((weighted_total / weight_total) * 10))
-    elif interview.overall_score is None and score_values:
-        interview.overall_score = int(round((sum(score_values) / len(score_values)) * 10))
-    candidate.status = "Interview Completed"
-    candidate.updated_at = utcnow()
-    session.add(interview)
-    session.add(candidate)
-    log_activity(session, action="interview_completed", candidate_id=candidate.id, job_id=job.id, details=interview.id)
-    session.commit()
-    session.refresh(report)
-    return report
+    return _complete_interview_state(
+        session,
+        interview=interview,
+        candidate=candidate,
+        job=job,
+        report=report,
+        report_data=report_data,
+    )
 
 
 @router.get("/magic-links/{token}/verify")
@@ -493,5 +574,11 @@ def candidate_report(link: InterviewLink = Depends(get_candidate_link), session:
     report = session.exec(select(InterviewReport).where(InterviewReport.interview_id == interview.id)).first()
     if not report:
         raise HTTPException(status_code=404, detail="Report not generated yet")
-    scores = session.exec(select(CandidateScore).where(CandidateScore.report_id == report.id)).all()
-    return {"interview": interview.model_dump(), "report": report.model_dump(), "scores": [score.model_dump() for score in scores]}
+    return {
+        "interview": {
+            "id": interview.id,
+            "status": "completed" if interview.status == "completed" else interview.status,
+            "completed_at": interview.completed_at.isoformat() if interview.completed_at else None,
+        },
+        "message": "Your interview has been submitted to the recruiter.",
+    }

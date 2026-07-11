@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from openai import OpenAI
 
 from ..config import settings
-from ..models import Candidate, CandidateProfile, InterviewTranscript, JobDescription, Resume
+from ..models import Candidate, CandidateProfile, CandidateScore, InterviewReport, InterviewTranscript, JobDescription, Resume
 
 
 SCORE_METRICS = [
@@ -134,6 +134,104 @@ def _transcript_context(transcripts: List[InterviewTranscript]) -> str:
         lines.append(f"Q{item.sequence_number}: {item.question_text}")
         lines.append(f"A{item.sequence_number}: {item.answer_text or '[not answered yet]'}")
     return "\n".join(lines)
+
+
+def _answered_transcripts(transcripts: List[InterviewTranscript]) -> List[InterviewTranscript]:
+    return [item for item in transcripts if item.answer_text and item.answer_text.strip()]
+
+
+def _word_count(text: Optional[str]) -> int:
+    return len(_answer_words(text))
+
+
+def _score_context(scores: List[CandidateScore]) -> str:
+    if not scores:
+        return "No score rows are available."
+    return "\n".join(
+        f"- {item.category}: {item.score}/10. Reasoning: {item.reasoning or 'No reasoning provided.'}"
+        for item in scores
+    )
+
+
+def _report_context(report: Optional[InterviewReport]) -> str:
+    if not report:
+        return "No final report is available yet."
+    return f"""
+Summary: {report.summary}
+Strengths: {report.strengths}
+Weaknesses: {report.weaknesses}
+Key Observations: {report.key_observations}
+Technical Assessment: {report.technical_assessment}
+Behavioral Assessment: {report.behavioral_assessment}
+Recommendation: {report.recommendation}
+Recommendation Reason: {report.recommendation_reason}
+"""
+
+
+def _evidence_snapshot(transcripts: List[InterviewTranscript], scores: List[Dict[str, Any]]) -> Dict[str, Any]:
+    answered = _answered_transcripts(transcripts)
+    total_words = sum(_word_count(item.answer_text) for item in answered)
+    average_words = int(round(total_words / len(answered))) if answered else 0
+    covered_categories = [item.category or "uncategorized" for item in answered if item.category != "candidate_questions"]
+    sorted_scores = sorted(scores, key=lambda item: int(item.get("score", 1)))
+    weakest = sorted_scores[:2]
+    strongest = sorted_scores[-2:][::-1]
+    return {
+        "answered_count": len(answered),
+        "total_words": total_words,
+        "average_words": average_words,
+        "covered_categories": covered_categories,
+        "strongest": strongest,
+        "weakest": weakest,
+    }
+
+
+def _fallback_report(candidate: Candidate, job: JobDescription, transcripts: List[InterviewTranscript]) -> Dict[str, Any]:
+    scores = _strict_scorecard(transcripts)
+    overall = _weighted_overall(scores)
+    recommendation = _recommendation_from_score(overall)
+    evidence = _evidence_snapshot(transcripts, scores)
+    answered_count = evidence["answered_count"]
+    avg_words = evidence["average_words"]
+    strongest = ", ".join(f"{item['category']} ({item['score']}/10)" for item in evidence["strongest"]) or "No clear strengths"
+    weakest = ", ".join(f"{item['category']} ({item['score']}/10)" for item in evidence["weakest"]) or "No scored evidence"
+    coverage = ", ".join(dict.fromkeys(evidence["covered_categories"])) or "No assessable competency coverage"
+
+    if answered_count:
+        summary = (
+            f"{candidate.full_name} completed {answered_count} assessable answer(s) for the {job.job_title} role. "
+            f"The report is based on transcript evidence, with an average answer depth of {avg_words} words."
+        )
+    else:
+        summary = (
+            f"{candidate.full_name} reached the report stage for the {job.job_title} role, but no assessable answers "
+            "were captured in the transcript."
+        )
+
+    return {
+        "summary": summary,
+        "strengths": f"Highest-scoring areas: {strongest}. These are still evidence-capped by the submitted answers.",
+        "weaknesses": f"Lowest-scoring areas: {weakest}. Short, vague, missing, or off-topic answers reduce marks.",
+        "key_observations": (
+            f"Competency coverage: {coverage}. Total captured answer volume: {evidence['total_words']} words. "
+            "Scores reward concrete examples, technical decisions, trade-offs, collaboration, and measurable outcomes."
+        ),
+        "technical_assessment": (
+            "Technical depth is evaluated from role-relevant implementation detail, architecture choices, debugging, "
+            "tools, constraints, and trade-offs. Missing technical evidence keeps the score low."
+        ),
+        "behavioral_assessment": (
+            "Behavioral evidence is evaluated from ownership, collaboration, stakeholder handling, adaptability, "
+            "learning, and measurable impact described in the answers."
+        ),
+        "recommendation": recommendation,
+        "recommendation_reason": (
+            f"Weighted evidence score is {overall}/100. Recommendation is {recommendation} because the scorecard "
+            f"shows strongest evidence in {strongest} and main risk in {weakest}."
+        ),
+        "scores": scores,
+        "overall_score": overall,
+    }
 
 
 def _planned_step(sequence: int, max_questions: int) -> Dict[str, str]:
@@ -365,22 +463,7 @@ def generate_report(
     transcripts: List[InterviewTranscript],
 ) -> Dict[str, Any]:
     transcript = _transcript_context(transcripts)
-    strict_scores = _strict_scorecard(transcripts)
-    strict_overall = _weighted_overall(strict_scores)
-    strict_recommendation = _recommendation_from_score(strict_overall)
-
-    fallback = {
-        "summary": f"{candidate.full_name} completed the AI human interviewer screening for {job.job_title}.",
-        "strengths": "Strengths require recruiter review because the AI report used evidence-based fallback scoring.",
-        "weaknesses": "Weak or generic answers are penalized. Missing evidence lowers technical, leadership, and problem-solving scores.",
-        "key_observations": "Scorecard is based on answer specificity, role relevance, technical evidence, ownership, collaboration, and measurable outcomes.",
-        "technical_assessment": "Technical score is capped when answers lack concrete implementation detail, architecture, tools, trade-offs, or debugging evidence.",
-        "behavioral_assessment": "Behavioral score is based on concrete examples of ownership, collaboration, feedback, and adaptability.",
-        "recommendation": strict_recommendation,
-        "recommendation_reason": f"Evidence-based fallback score: {strict_overall}/100. Random, short, or generic answers are capped low.",
-        "scores": strict_scores,
-        "overall_score": strict_overall,
-    }
+    fallback = _fallback_report(candidate, job, transcripts)
 
     client = _client()
     if not client:
@@ -453,3 +536,76 @@ Interview Transcript:
     ).strip()
     parsed["raw_json"] = content
     return parsed
+
+
+def answer_report_question(
+    *,
+    candidate: Candidate,
+    job: JobDescription,
+    profile: Optional[CandidateProfile],
+    resume: Optional[Resume],
+    transcripts: List[InterviewTranscript],
+    report: Optional[InterviewReport],
+    scores: List[CandidateScore],
+    question: str,
+) -> str:
+    clean_question = question.strip()
+    if not clean_question:
+        return "Ask a specific question about the candidate report, recommendation, scorecard, or transcript evidence."
+
+    fallback = (
+        f"Maya's report view: {report.recommendation if report else 'Recommendation unavailable'}. "
+        f"{report.recommendation_reason if report else 'No report reasoning is available yet.'} "
+        f"Score evidence: {_score_context(scores)}"
+    )
+
+    client = _client()
+    if not client:
+        return fallback[:1800]
+
+    system_prompt = """You are Maya, explaining an interview report to a recruiter.
+Answer only from the candidate profile, job description, transcript, scorecard, and report evidence.
+Be direct, practical, and specific. Do not invent facts. If evidence is missing, say so.
+Explain why the recommendation or score was given, cite transcript signals, and mention what a recruiter should verify next.
+Never write as if the candidate is reading this. This is recruiter-only analysis.
+"""
+    user_prompt = f"""
+Recruiter question:
+{clean_question}
+
+Candidate:
+Name: {candidate.full_name}
+Current Role: {candidate.current_role}
+Current Company: {candidate.current_company or "N/A"}
+
+Job:
+{_job_context(job)}
+
+Profile:
+{_profile_context(profile)}
+
+Resume:
+{(resume.parsed_text if resume and resume.parsed_text else "Resume text unavailable")[:8000]}
+
+Report:
+{_report_context(report)}
+
+Scorecard:
+{_score_context(scores)}
+
+Transcript:
+{_transcript_context(transcripts)}
+"""
+    try:
+        response = client.chat.completions.create(
+            model=settings.openai_chat_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+        )
+        answer = (response.choices[0].message.content or "").strip()
+        return answer or fallback[:1800]
+    except Exception:
+        return fallback[:1800]

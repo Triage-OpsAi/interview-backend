@@ -14,11 +14,12 @@ from ..models import (
     Resume,
     User,
 )
-from ..schemas import CandidateActionResponse
+from ..schemas import CandidateActionResponse, ReportAskRequest, ReportAskResponse
 from ..security import utcnow
+from ..services import ai_interviewer
 from ..services.activity import log_activity
 from ..services.email_service import next_round_template, rejection_template, send_email
-from ..services.pdf_service import build_report_pdf
+from ..services.pdf_service import build_curated_report_pdf
 
 router = APIRouter(prefix="/api/v1/reports", tags=["reports"])
 
@@ -165,58 +166,44 @@ def download_report_pdf(
 ):
     interview, candidate, job = _interview_context(session, interview_id, user)
     payload = _report_payload(session, interview, candidate, job)
-    report = payload["report"] or {}
-    lines = [
-        "AI Human Interview Report",
-        "",
-        f"Candidate: {candidate.full_name}",
-        f"Email: {candidate.email}",
-        f"Mobile: {candidate.mobile_number}",
-        f"Current Role: {candidate.current_role}",
-        f"Job: {job.job_title} at {job.company_name}",
-        f"Interview Status: {interview.status}",
-        f"Overall Score: {interview.overall_score or 'N/A'}",
-        "",
-        "Scores",
-    ]
-    for score in payload["scores"]:
-        lines.append(f"- {score['category']}: {score['score']}/10 - {score.get('reasoning') or ''}")
-    lines.extend(
-        [
-            "",
-            "Summary",
-            report.get("summary", "Report has not been generated."),
-            "",
-            "Strengths",
-            report.get("strengths", ""),
-            "",
-            "Weaknesses",
-            report.get("weaknesses", ""),
-            "",
-            "Key Observations",
-            report.get("key_observations", ""),
-            "",
-            "Technical Assessment",
-            report.get("technical_assessment", ""),
-            "",
-            "Behavioral Assessment",
-            report.get("behavioral_assessment", ""),
-            "",
-            "Recommendation",
-            f"{report.get('recommendation', 'N/A')} - {report.get('recommendation_reason', '')}",
-            "",
-            "Transcript",
-        ]
-    )
-    for item in payload["transcript"]:
-        lines.append(f"Q{item['sequence_number']}: {item['question_text']}")
-        lines.append(f"A{item['sequence_number']}: {item.get('answer_text') or '[no answer]'}")
-        lines.append("")
-
-    pdf = build_report_pdf(lines)
+    pdf = build_curated_report_pdf(payload)
     filename = f"interview-report-{candidate.full_name.replace(' ', '-').lower()}.pdf"
     return Response(
         content=pdf,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/interviews/{interview_id}/ask", response_model=ReportAskResponse)
+def ask_maya_about_report(
+    interview_id: str,
+    payload: ReportAskRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    interview, candidate, job = _interview_context(session, interview_id, user)
+    report = session.exec(select(InterviewReport).where(InterviewReport.interview_id == interview.id)).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Report has not been generated yet")
+    scores = session.exec(select(CandidateScore).where(CandidateScore.interview_id == interview.id)).all()
+    transcripts = session.exec(
+        select(InterviewTranscript)
+        .where(InterviewTranscript.interview_id == interview.id)
+        .order_by(InterviewTranscript.sequence_number)
+    ).all()
+    profile = session.exec(select(CandidateProfile).where(CandidateProfile.candidate_id == candidate.id)).first()
+    resume = session.exec(
+        select(Resume).where(Resume.candidate_id == candidate.id).order_by(Resume.uploaded_at.desc())
+    ).first()
+    answer = ai_interviewer.answer_report_question(
+        candidate=candidate,
+        job=job,
+        profile=profile,
+        resume=resume,
+        transcripts=transcripts,
+        report=report,
+        scores=scores,
+        question=payload.question,
+    )
+    return ReportAskResponse(answer=answer)

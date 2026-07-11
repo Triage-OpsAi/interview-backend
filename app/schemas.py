@@ -94,3 +94,11 @@ class CandidateActionResponse(BaseModel):
     candidate_id: str
     status: str
     email_status: str
+
+
+class ReportAskRequest(BaseModel):
+    question: str
+
+
+class ReportAskResponse(BaseModel):
+    answer: str
