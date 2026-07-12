@@ -85,6 +85,14 @@ class PdfReport:
         if self.ops:
             self.pages.append(self.ops)
             self.ops = []
+        total = len(self.pages)
+        for index, ops in enumerate(self.pages, start=1):
+            ops.append(_color(BORDER, "RG"))
+            ops.append("0.6 w")
+            ops.append(f"{MARGIN:.2f} 28.00 m {PAGE_WIDTH - MARGIN:.2f} 28.00 l S")
+            ops.append(_color(MUTED, "rg"))
+            ops.append(f"BT /F1 8 Tf 1 0 0 1 {MARGIN:.2f} 16.00 Tm (Confidential hiring report) Tj ET")
+            ops.append(f"BT /F1 8 Tf 1 0 0 1 {PAGE_WIDTH - MARGIN - 54:.2f} 16.00 Tm (Page {index} of {total}) Tj ET")
         return _serialize_pdf(self.pages)
 
     def ensure(self, height: float) -> None:
@@ -148,17 +156,29 @@ class PdfReport:
 
     def paragraph_card(self, title: str, body: Any, color: tuple[float, float, float] = TEAL) -> None:
         lines = _wrap(body, 88)
-        height = max(62, 38 + len(lines) * 13)
-        self.ensure(height + 8)
-        top = self.y
-        self.rect(MARGIN, top - height, PAGE_WIDTH - (MARGIN * 2), height, fill=LIGHT_BG, stroke=BORDER)
-        self.rect(MARGIN, top - 5, PAGE_WIDTH - (MARGIN * 2), 5, fill=color)
-        self.text(title, MARGIN + 14, top - 24, size=11, font="F2", color=INK)
-        y = top - 42
-        for line in lines:
-            self.text(line, MARGIN + 14, y, size=9, color=MUTED)
-            y -= 13
-        self.y = top - height - 12
+        first = True
+        while lines:
+            available = self.y - MARGIN - 54
+            max_lines = max(1, int(available // 13))
+            if max_lines < 3:
+                self.new_page()
+                continue
+            chunk = lines[:max_lines]
+            lines = lines[max_lines:]
+            height = max(62, 42 + len(chunk) * 13)
+            top = self.y
+            self.rect(MARGIN, top - height, PAGE_WIDTH - (MARGIN * 2), height, fill=LIGHT_BG, stroke=BORDER)
+            self.rect(MARGIN, top - 5, PAGE_WIDTH - (MARGIN * 2), 5, fill=color)
+            card_title = title if first else f"{title} (continued)"
+            self.text(card_title, MARGIN + 14, top - 24, size=11, font="F2", color=INK)
+            y = top - 42
+            for line in chunk:
+                self.text(line, MARGIN + 14, y, size=9, color=MUTED)
+                y -= 13
+            self.y = top - height - 12
+            first = False
+            if lines:
+                self.new_page()
 
     def star(self, cx: float, cy: float, radius: float, color: tuple[float, float, float], filled: bool) -> None:
         points = []
@@ -188,7 +208,7 @@ class PdfReport:
         value = max(0, min(10, int(score.get("score") or 0)))
         reasoning = score.get("reasoning") or "No reasoning provided."
         lines = _wrap(reasoning, 76)
-        height = 74 + len(lines) * 12
+        height = 82 + len(lines) * 12
         self.ensure(height + 8)
         top = self.y
         accent = _score_color(value)
@@ -200,7 +220,7 @@ class PdfReport:
         bar_width = PAGE_WIDTH - (MARGIN * 2) - 32
         self.rect(MARGIN + 16, top - 60, bar_width, 7, fill=(0.90, 0.93, 0.96))
         self.rect(MARGIN + 16, top - 60, bar_width * (value / 10), 7, fill=accent)
-        y = top - 78
+        y = top - 76
         for line in lines:
             self.text(line, MARGIN + 16, y, size=8, color=MUTED)
             y -= 12
@@ -306,12 +326,28 @@ def build_curated_report_pdf(payload: dict) -> bytes:
     else:
         pdf.paragraph_card("No Scores", "No score rows were available for this report.", RED)
 
-    pdf.section("Transcript Evidence", TEAL)
+    pdf.section("Evidence Appendix", TEAL)
+    pdf.wrapped(
+        "The full transcript remains available in the recruiter dashboard. This appendix includes concise excerpts only; "
+        "scores and recommendations are based on the complete captured interview.",
+        MARGIN,
+        PAGE_WIDTH - (MARGIN * 2),
+        size=9,
+        line_height=13,
+    )
+    pdf.y -= 8
     for item in transcript:
         question = item.get("question_text") or "Question unavailable"
         answer = item.get("answer_text") or "[no answer]"
         words = len(str(answer).split()) if answer != "[no answer]" else 0
-        pdf.paragraph_card(f"Q{item.get('sequence_number')}: {question}", f"Answer ({words} words): {answer}", CYAN)
+        excerpt = str(answer).strip()
+        if len(excerpt) > 420:
+            excerpt = excerpt[:417].rsplit(" ", 1)[0] + "..."
+        pdf.paragraph_card(
+            f"Q{item.get('sequence_number')} evidence - {item.get('category') or 'general'}",
+            f"Prompt: {question}\nResponse excerpt ({words} words total): {excerpt}",
+            CYAN,
+        )
 
     return pdf.finish()
 

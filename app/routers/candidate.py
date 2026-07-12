@@ -562,8 +562,26 @@ def complete_interview(link: InterviewLink = Depends(get_candidate_link), sessio
     interview = _interview(session, link)
     if not interview:
         raise HTTPException(status_code=400, detail="Interview has not started")
-    report = _finalize_interview(session, interview)
-    return {"is_complete": True, "report_id": report.id}
+    candidate, _ = _candidate_and_job(session, link)
+
+    # Ending the interview is authoritative and must not depend on AI report generation.
+    # Persist the closed state first so a slow/failed evaluator can never keep Maya running.
+    interview.status = "completed"
+    interview.completed_at = interview.completed_at or utcnow()
+    if interview.started_at:
+        interview.duration_seconds = elapsed_seconds(interview.started_at, interview.completed_at)
+    candidate.status = "Interview Completed"
+    candidate.updated_at = utcnow()
+    session.add(interview)
+    session.add(candidate)
+    session.commit()
+
+    try:
+        report = _finalize_interview(session, interview)
+        return {"is_complete": True, "report_id": report.id, "report_pending": False}
+    except Exception:
+        session.rollback()
+        return {"is_complete": True, "report_id": None, "report_pending": True}
 
 
 @router.get("/session/report")

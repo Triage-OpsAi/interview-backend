@@ -209,20 +209,21 @@ def _fallback_report(candidate: Candidate, job: JobDescription, transcripts: Lis
         )
 
     return {
-        "summary": summary,
-        "strengths": f"Highest-scoring areas: {strongest}. These are still evidence-capped by the submitted answers.",
-        "weaknesses": f"Lowest-scoring areas: {weakest}. Short, vague, missing, or off-topic answers reduce marks.",
+        "summary": f"Hiring verdict: {recommendation} ({overall}/100). {summary} The strongest measured areas are {strongest}; the largest risks are {weakest}.",
+        "strengths": f"Validated strengths: {strongest}. Treat these as demonstrated only where the answers included specific actions, technical choices, or outcomes.",
+        "weaknesses": f"Hiring risks and evidence gaps: {weakest}. Validate any vague, missing, off-topic, or untested claims in the next round.",
         "key_observations": (
             f"Competency coverage: {coverage}. Total captured answer volume: {evidence['total_words']} words. "
-            "Scores reward concrete examples, technical decisions, trade-offs, collaboration, and measurable outcomes."
+            "Coverage gaps must be tested in a focused live technical round. Ask the candidate to defend one implementation, "
+            "debug a realistic failure, and explain one trade-off with measurable impact."
         ),
         "technical_assessment": (
-            "Technical depth is evaluated from role-relevant implementation detail, architecture choices, debugging, "
-            "tools, constraints, and trade-offs. Missing technical evidence keeps the score low."
+            f"Technical readiness for {job.job_title} is based on implementation detail, architecture choices, debugging, "
+            "tools, constraints, and trade-offs. Missing technical evidence is a material hiring risk and keeps the score low."
         ),
         "behavioral_assessment": (
-            "Behavioral evidence is evaluated from ownership, collaboration, stakeholder handling, adaptability, "
-            "learning, and measurable impact described in the answers."
+            "Behavioral readiness is based on ownership, collaboration, stakeholder handling, adaptability, learning, "
+            "and measurable impact. Claims without a concrete situation, action, and result should be re-validated."
         ),
         "recommendation": recommendation,
         "recommendation_reason": (
@@ -470,7 +471,7 @@ def generate_report(
         return fallback
 
     metric_lines = "\n".join(f"- {item['category']} ({int(item['weight'] * 100)}%)" for item in SCORE_METRICS)
-    system_prompt = f"""You are a strict senior hiring manager generating a detailed hiring report.
+    system_prompt = f"""You are a strict senior hiring manager producing a decision-ready hiring report, not a transcript summary.
 Score only from transcript evidence. Do not reward confidence, fluency, or long answers unless they contain specific, role-relevant evidence.
 If an answer is random, vague, off-topic, repetitive, or lacks examples, score that competency 1-3.
 If an answer is generic but somewhat relevant, score 4-5.
@@ -481,6 +482,18 @@ The final overall score must reflect this weighted scorecard:
 Recommendation must be one of: Strong Hire, Hire, Borderline, No Hire, Strong No Hire.
 Mention coverage gaps, including if no real technical answer was given.
 Candidate questions at the end should be treated as closing context, not as proof of technical ability.
+Synthesize and judge the evidence; never retell the interview question by question and never copy long candidate answers.
+Every section must add a hiring insight: what was demonstrated, what remains unproven, why it matters for this exact job, and what to validate next.
+Use concise plain text with short labeled points separated by semicolons. Do not use markdown tables.
+Section requirements:
+- summary: 90-140 words with verdict, readiness, strongest evidence, largest risk, and confidence level.
+- strengths: 3-5 evidence-backed strengths; distinguish demonstrated evidence from candidate claims.
+- weaknesses: 3-5 role-specific risks or missing evidence and their likely hiring impact.
+- key_observations: coverage quality, consistency, contradictions, interview limitations, and 3 concrete next-round validation questions.
+- technical_assessment: depth, correctness, implementation detail, debugging, architecture/trade-offs, and production readiness.
+- behavioral_assessment: ownership, collaboration, communication, adaptability, motivation, and concerns.
+- recommendation_reason: a decisive 60-100 word justification tied to weighted evidence and explicit conditions for proceeding.
+Keep each non-summary narrative section between 70 and 130 words.
 Return only JSON:
 {{
   "summary": "...",

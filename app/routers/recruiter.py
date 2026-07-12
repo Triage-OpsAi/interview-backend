@@ -6,7 +6,7 @@ from sqlmodel import Session, select
 from ..config import settings
 from ..database import get_session
 from ..dependencies import get_current_user
-from ..models import Candidate, Interview, InterviewLink, JobDescription, User
+from ..models import Candidate, CandidateProfile, Interview, InterviewLink, JobDescription, User
 from ..schemas import (
     CandidateCreateRequest,
     CandidateUpdateRequest,
@@ -172,7 +172,29 @@ def list_candidates(job_id: str, user: User = Depends(get_current_user), session
             changed = True
     if changed:
         session.commit()
-    return [_candidate_payload(candidate) for candidate in candidates]
+    output = []
+    for serial, candidate in enumerate(candidates, start=1):
+        profile = session.exec(
+            select(CandidateProfile).where(CandidateProfile.candidate_id == candidate.id)
+        ).first()
+        interview = session.exec(
+            select(Interview)
+            .where(Interview.candidate_id == candidate.id)
+            .order_by(Interview.created_at.desc())
+        ).first()
+        item = _candidate_payload(candidate)
+        item.update({
+            "serial_number": serial,
+            "expected_ctc": profile.expected_ctc if profile else None,
+            "interviewed": bool(interview and interview.status == "completed"),
+            "interview_date": (
+                (interview.completed_at or interview.started_at).isoformat()
+                if interview and (interview.completed_at or interview.started_at)
+                else None
+            ),
+        })
+        output.append(item)
+    return output
 
 
 @router.patch("/jobs/{job_id}/candidates/{candidate_id}")
