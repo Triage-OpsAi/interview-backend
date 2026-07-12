@@ -6,7 +6,7 @@ from sqlmodel import Session, select
 from ..config import settings
 from ..database import get_session
 from ..dependencies import get_current_user
-from ..models import Candidate, InterviewLink, JobDescription, User
+from ..models import Candidate, Interview, InterviewLink, JobDescription, User
 from ..schemas import (
     CandidateCreateRequest,
     CandidateUpdateRequest,
@@ -123,8 +123,6 @@ def add_candidate(
     session: Session = Depends(get_session),
 ):
     _job_or_404(session, job_id, user)
-    if payload.status not in VALID_CANDIDATE_STATUSES:
-        raise HTTPException(status_code=400, detail="Invalid candidate status")
     candidate = Candidate(
         job_id=job_id,
         created_by=user.id,
@@ -133,7 +131,7 @@ def add_candidate(
         mobile_number=payload.mobile_number.strip(),
         current_role=payload.current_role.strip(),
         current_company=payload.current_company.strip() if payload.current_company else None,
-        status=payload.status,
+        status="Pending Interview",
     )
     session.add(candidate)
     session.flush()
@@ -149,6 +147,31 @@ def list_candidates(job_id: str, user: User = Depends(get_current_user), session
     candidates = session.exec(
         select(Candidate).where(Candidate.job_id == job_id).order_by(Candidate.created_at.desc())
     ).all()
+    changed = False
+    workflow_statuses = {"Pending Interview", "Interview Scheduled", "Interview Completed"}
+    for candidate in candidates:
+        if candidate.status not in workflow_statuses:
+            continue
+        interview = session.exec(
+            select(Interview)
+            .where(Interview.candidate_id == candidate.id)
+            .order_by(Interview.created_at.desc())
+        ).first()
+        has_link = session.exec(
+            select(InterviewLink.id).where(InterviewLink.candidate_id == candidate.id)
+        ).first() is not None
+        expected = (
+            "Interview Completed" if interview and interview.status == "completed"
+            else "Interview Scheduled" if has_link
+            else "Pending Interview"
+        )
+        if candidate.status != expected:
+            candidate.status = expected
+            candidate.updated_at = utcnow()
+            session.add(candidate)
+            changed = True
+    if changed:
+        session.commit()
     return [_candidate_payload(candidate) for candidate in candidates]
 
 
