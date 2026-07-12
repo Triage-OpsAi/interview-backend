@@ -6,7 +6,7 @@ from sqlmodel import Session, select
 from ..config import settings
 from ..database import get_session
 from ..dependencies import get_current_user
-from ..models import Candidate, CandidateProfile, Interview, InterviewLink, JobDescription, User
+from ..models import Candidate, CandidateProfile, Interview, InterviewLink, JobDescription, RecruiterInvitation, User
 from ..schemas import (
     CandidateCreateRequest,
     CandidateUpdateRequest,
@@ -40,16 +40,21 @@ def _frontend_base_url() -> str:
     return f"https://{base_url}"
 
 
+def _workspace_owner(session: Session, user: User) -> str:
+    membership = session.exec(select(RecruiterInvitation).where(RecruiterInvitation.invited_user_id == user.id)).first()
+    return membership.manager_id if membership else user.id
+
+
 def _job_or_404(session: Session, job_id: str, user: User) -> JobDescription:
     job = session.get(JobDescription, job_id)
-    if not job or job.created_by != user.id:
+    if not job or job.created_by != _workspace_owner(session, user):
         raise HTTPException(status_code=404, detail="Job description not found")
     return job
 
 
 def _candidate_or_404(session: Session, candidate_id: str, job_id: str, user: User) -> Candidate:
     candidate = session.get(Candidate, candidate_id)
-    if not candidate or candidate.job_id != job_id or candidate.created_by != user.id:
+    if not candidate or candidate.job_id != job_id or candidate.created_by != _workspace_owner(session, user):
         raise HTTPException(status_code=404, detail="Candidate not found")
     return candidate
 
@@ -69,7 +74,7 @@ def candidate_statuses():
 
 @router.post("/jobs")
 def create_job(payload: JobCreateRequest, user: User = Depends(get_current_user), session: Session = Depends(get_session)):
-    job = JobDescription(created_by=user.id, **payload.model_dump())
+    job = JobDescription(created_by=_workspace_owner(session, user), **payload.model_dump())
     session.add(job)
     session.flush()
     log_activity(session, action="job_created", actor_user_id=user.id, job_id=job.id, details=payload.job_title)
@@ -81,7 +86,7 @@ def create_job(payload: JobCreateRequest, user: User = Depends(get_current_user)
 @router.get("/jobs")
 def list_jobs(user: User = Depends(get_current_user), session: Session = Depends(get_session)):
     jobs = session.exec(
-        select(JobDescription).where(JobDescription.created_by == user.id).order_by(JobDescription.created_at.desc())
+        select(JobDescription).where(JobDescription.created_by == _workspace_owner(session, user)).order_by(JobDescription.created_at.desc())
     ).all()
     output = []
     for job in jobs:
@@ -125,7 +130,7 @@ def add_candidate(
     _job_or_404(session, job_id, user)
     candidate = Candidate(
         job_id=job_id,
-        created_by=user.id,
+        created_by=_workspace_owner(session, user),
         full_name=payload.full_name.strip(),
         email=payload.email.strip().lower(),
         mobile_number=payload.mobile_number.strip(),

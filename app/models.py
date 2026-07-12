@@ -25,6 +25,22 @@ class User(SQLModel, table=True):
     last_login_at: Optional[datetime] = None
 
 
+class RecruiterInvitation(SQLModel, table=True):
+    __tablename__ = "recruiter_invitations"
+
+    id: str = Field(default_factory=gen_id, primary_key=True)
+    manager_id: str = Field(foreign_key="users.id", index=True)
+    email: str = Field(index=True)
+    full_name: str
+    role: str = Field(default="recruiter", index=True)
+    token_hash: str = Field(index=True, unique=True)
+    status: str = Field(default="pending", index=True)
+    invited_user_id: Optional[str] = Field(default=None, foreign_key="users.id", index=True)
+    expires_at: datetime
+    created_at: datetime = Field(default_factory=utcnow)
+    accepted_at: Optional[datetime] = None
+
+
 class JobDescription(SQLModel, table=True):
     __tablename__ = "job_descriptions"
 
@@ -65,6 +81,7 @@ class InterviewLink(SQLModel, table=True):
     id: str = Field(default_factory=gen_id, primary_key=True)
     candidate_id: str = Field(foreign_key="candidates.id", index=True)
     job_id: str = Field(foreign_key="job_descriptions.id", index=True)
+    round_number: int = Field(default=1, index=True)
     token_hash: str = Field(index=True, unique=True)
     magic_link: str = Field(sa_column=Column(Text))
     expires_at: datetime = Field(index=True)
@@ -124,6 +141,7 @@ class Interview(SQLModel, table=True):
     id: str = Field(default_factory=gen_id, primary_key=True)
     candidate_id: str = Field(foreign_key="candidates.id", index=True)
     job_id: str = Field(foreign_key="job_descriptions.id", index=True)
+    round_number: int = Field(default=1, index=True)
     interview_link_id: Optional[str] = Field(default=None, foreign_key="interview_links.id", index=True)
     status: str = Field(default="not_started", index=True)
     started_at: Optional[datetime] = None
@@ -146,9 +164,22 @@ class InterviewTranscript(SQLModel, table=True):
     answer_text: Optional[str] = Field(default=None, sa_column=Column(Text))
     category: Optional[str] = None
     difficulty: Optional[str] = None
+    response_mode: str = Field(default="voice")
     follow_up_of: Optional[str] = Field(default=None, foreign_key="interview_transcripts.id")
     asked_at: datetime = Field(default_factory=utcnow)
     answered_at: Optional[datetime] = None
+
+
+class ProctorEvent(SQLModel, table=True):
+    __tablename__ = "proctor_events"
+
+    id: str = Field(default_factory=gen_id, primary_key=True)
+    interview_id: str = Field(foreign_key="interviews.id", index=True)
+    candidate_id: str = Field(foreign_key="candidates.id", index=True)
+    event_type: str = Field(index=True)
+    severity: str = Field(default="warning", index=True)
+    details: Optional[str] = Field(default=None, sa_column=Column(Text))
+    occurred_at: datetime = Field(default_factory=utcnow, index=True)
 
 
 class InterviewReport(SQLModel, table=True):

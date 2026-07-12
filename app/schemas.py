@@ -14,10 +14,29 @@ class AuthLoginRequest(BaseModel):
     password: str
 
 
+class AuthProfileUpdate(BaseModel):
+    full_name: str
+
+
 class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: dict
+
+
+class RecruiterInviteRequest(BaseModel):
+    full_name: str
+    email: str
+
+
+class RecruiterOnboardRequest(BaseModel):
+    token: str
+    full_name: str
+    password: str
+
+
+class RecruiterRoleRequest(BaseModel):
+    role: str
 
 
 class JobCreateRequest(BaseModel):
@@ -88,6 +107,12 @@ class CandidateSessionResponse(BaseModel):
 
 class InterviewAnswerRequest(BaseModel):
     answer_text: str
+
+
+class ProctorEventRequest(BaseModel):
+    event_type: str
+    severity: str = "warning"
+    details: Optional[str] = None
 
 
 class CandidateActionResponse(BaseModel):

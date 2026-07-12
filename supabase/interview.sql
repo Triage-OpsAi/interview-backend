@@ -30,6 +30,7 @@ drop table if exists public.questions cascade;
 drop table if exists public.interviews cascade;
 drop table if exists public.candidates cascade;
 drop table if exists public.job_descriptions cascade;
+drop table if exists public.recruiter_invitations cascade;
 drop table if exists public.users cascade;
 
 create table if not exists public.users (
@@ -41,6 +42,20 @@ create table if not exists public.users (
     session_token_hash text,
     created_at timestamptz not null default now(),
     last_login_at timestamptz
+);
+
+create table if not exists public.recruiter_invitations (
+    id text primary key default gen_random_uuid()::text,
+    manager_id text not null references public.users(id) on delete cascade,
+    email text not null,
+    full_name text not null,
+    role text not null default 'recruiter' check (role in ('recruiter', 'manager')),
+    token_hash text not null unique,
+    status text not null default 'pending' check (status in ('pending', 'accepted', 'expired', 'revoked')),
+    invited_user_id text references public.users(id) on delete set null,
+    expires_at timestamptz not null,
+    created_at timestamptz not null default now(),
+    accepted_at timestamptz
 );
 
 create table if not exists public.job_descriptions (

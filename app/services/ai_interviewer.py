@@ -310,18 +310,18 @@ def _metric_score(metric: str, transcripts: List[InterviewTranscript]) -> Dict[s
         return {"category": metric, "score": 1, "reasoning": "No assessable answers were submitted."}
 
     category_answers = {
-        "Technical Depth": ("technical_depth", TECHNICAL_WORDS),
-        "Applied Problem Solving": ("problem_solving", OUTCOME_WORDS),
-        "System Design & Trade-offs": ("system_design", TECHNICAL_WORDS),
-        "Role & Domain Fit": ("role_domain_fit", None),
-        "Ownership & Leadership": ("ownership_leadership", LEADERSHIP_WORDS),
-        "Collaboration & Stakeholder Handling": ("collaboration", COLLABORATION_WORDS),
-        "Communication Clarity": ("", None),
-        "Adaptability & Learning": ("adaptability", None),
-        "Motivation & Company Fit": ("motivation_company_fit", None),
+        "Technical Depth": (("technical_depth", "coding", "api_design", "frontend_task"), TECHNICAL_WORDS),
+        "Applied Problem Solving": (("problem_solving", "coding", "api_design", "frontend_task"), OUTCOME_WORDS),
+        "System Design & Trade-offs": (("system_design", "api_design", "frontend_task"), TECHNICAL_WORDS),
+        "Role & Domain Fit": (("role_domain_fit", "technical_depth", "coding", "api_design", "frontend_task"), None),
+        "Ownership & Leadership": (("ownership_leadership",), LEADERSHIP_WORDS),
+        "Collaboration & Stakeholder Handling": (("collaboration",), COLLABORATION_WORDS),
+        "Communication Clarity": ((), None),
+        "Adaptability & Learning": (("adaptability",), None),
+        "Motivation & Company Fit": (("motivation_company_fit",), None),
     }
-    category, required_words = category_answers.get(metric, ("", None))
-    relevant = [item for item in usable if item.category == category] if category else usable
+    categories, required_words = category_answers.get(metric, ((), None))
+    relevant = [item for item in usable if item.category in categories] if categories else usable
     if not relevant:
         relevant = usable
 
@@ -386,8 +386,36 @@ def generate_next_question(
     resume: Optional[Resume],
     transcripts: List[InterviewTranscript],
     max_questions: int,
+    round_number: int = 1,
 ) -> Dict[str, str]:
     sequence = len(transcripts) + 1
+    if round_number == 2:
+        coding_tasks = [
+            "Write a function that returns the indices of two numbers whose sum equals a target. Explain time and space complexity.",
+            "Write a function that finds the length of the longest substring without repeating characters. Include edge cases.",
+            "Write a function that merges overlapping intervals and returns the minimal non-overlapping set.",
+            "Write a function that validates balanced brackets using an efficient data structure.",
+        ]
+        task_index = max(0, (sequence // 3) - 1) % len(coding_tasks)
+        if sequence in {2, 11}:
+            return {"question": coding_tasks[task_index], "category": "coding", "difficulty": "medium" if sequence == 11 else "easy", "response_mode": "code"}
+        if sequence == 5:
+            return {"question": f"Design and implement the core handler for a production API relevant to {job.job_title}. Include validation, authentication assumptions, error responses, and one test case.", "category": "api_design", "difficulty": "medium", "response_mode": "code"}
+        if sequence == 8:
+            return {"question": f"Build a small accessible frontend component relevant to {job.job_title}. Include loading, empty, error, and success states, and explain your state-management choice.", "category": "frontend_task", "difficulty": "medium", "response_mode": "code"}
+        if sequence >= max_questions:
+            return {"question": "What would you improve in your submitted solutions with more time, and what questions do you have for the engineering team?", "category": "candidate_questions", "difficulty": "easy", "response_mode": "voice"}
+        round_two_questions = {
+            1: "Welcome to Round 2. This is a proctored technical interview with coding and design tasks. Briefly describe the most technically demanding work you have done and your exact contribution.",
+            3: "Walk through your submitted solution. Why did you choose this approach, what is its complexity, and which edge case is most likely to break it?",
+            4: "Describe how you would debug a production issue in this role when the symptom is intermittent and logs are incomplete.",
+            6: "Defend the API implementation you submitted. How would you make it idempotent, observable, secure, and safe under retries?",
+            7: "Design the data flow for a feature central to this role. Explain storage, consistency, scaling, and failure trade-offs.",
+            9: "Review your frontend submission. How would you test accessibility, prevent stale state, and keep it performant with real production data?",
+            10: "Tell me about a technical decision you would reverse today. What evidence changed your mind?",
+        }
+        text = round_two_questions.get(sequence, "Explain one deep technical trade-off relevant to this role and how you would validate the decision in production.")
+        return {"question": text, "category": "technical_depth", "difficulty": "medium", "response_mode": "voice"}
     planned = _planned_step(sequence, max_questions)
     fallback = _fallback_question(job, sequence, max_questions)
 
@@ -452,6 +480,7 @@ Transcript so far:
         "question": parsed.get("question") or fallback["question"],
         "category": planned["category"],
         "difficulty": parsed.get("difficulty") or planned["difficulty"],
+        "response_mode": "voice",
     }
 
 

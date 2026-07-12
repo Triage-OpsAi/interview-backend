@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .database import init_db
-from .routers import auth, candidate, recruiter, reports
+from .routers import auth, candidate, recruiter, reports, team
 
 
 def _safe_error_message(exc: Exception) -> str:
@@ -48,6 +48,7 @@ app.include_router(auth.router)
 app.include_router(recruiter.router)
 app.include_router(candidate.router)
 app.include_router(reports.router)
+app.include_router(team.router)
 
 
 @app.get("/")

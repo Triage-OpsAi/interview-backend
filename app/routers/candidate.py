@@ -17,9 +17,10 @@ from ..models import (
     InterviewTranscript,
     JobDescription,
     OtpVerification,
+    ProctorEvent,
     Resume,
 )
-from ..schemas import CandidateSessionResponse, InterviewAnswerRequest, OtpVerifyRequest
+from ..schemas import CandidateSessionResponse, InterviewAnswerRequest, OtpVerifyRequest, ProctorEventRequest
 from ..security import elapsed_seconds, expires_in, generate_otp, generate_token, hash_secret, is_expired, mask_email, utcnow
 from ..services import ai_interviewer
 from ..services.activity import log_activity
@@ -102,10 +103,11 @@ def _job_payload(job: JobDescription) -> dict:
 
 
 def _get_or_create_interview(session: Session, link: InterviewLink) -> Interview:
+    target_questions = 12 if link.round_number == 2 else settings.max_interview_questions
     interview = _interview(session, link)
     if interview:
-        if interview.status == "not_started" and interview.max_questions != settings.max_interview_questions:
-            interview.max_questions = settings.max_interview_questions
+        if interview.status == "not_started" and interview.max_questions != target_questions:
+            interview.max_questions = target_questions
             session.add(interview)
             session.commit()
             session.refresh(interview)
@@ -114,8 +116,9 @@ def _get_or_create_interview(session: Session, link: InterviewLink) -> Interview
         candidate_id=link.candidate_id,
         job_id=link.job_id,
         interview_link_id=link.id,
+        round_number=link.round_number,
         status="not_started",
-        max_questions=settings.max_interview_questions,
+        max_questions=target_questions,
     )
     session.add(interview)
     session.commit()
@@ -478,6 +481,7 @@ def start_interview(link: InterviewLink = Depends(get_candidate_link), session: 
             resume=resume,
             transcripts=[],
             max_questions=interview.max_questions,
+            round_number=interview.round_number,
         )
         transcript = InterviewTranscript(
             interview_id=interview.id,
@@ -485,6 +489,7 @@ def start_interview(link: InterviewLink = Depends(get_candidate_link), session: 
             question_text=next_question["question"],
             category=next_question["category"],
             difficulty=next_question["difficulty"],
+            response_mode=next_question.get("response_mode", "voice"),
         )
         interview.status = "in_progress"
         interview.started_at = interview.started_at or utcnow()
@@ -499,6 +504,9 @@ def start_interview(link: InterviewLink = Depends(get_candidate_link), session: 
         "interview": interview.model_dump(),
         "current_question": transcripts[-1].model_dump(),
         "avatar_url": "/platform/assets/ai-human-interviewer.png",
+        "round_number": interview.round_number,
+        "duration_limit_seconds": 1200 if interview.round_number == 2 else 900,
+        "max_questions": interview.max_questions,
     }
 
 
@@ -540,6 +548,7 @@ def submit_answer(
         resume=resume,
         transcripts=transcripts,
         max_questions=interview.max_questions,
+        round_number=interview.round_number,
     )
     next_transcript = InterviewTranscript(
         interview_id=interview.id,
@@ -547,6 +556,7 @@ def submit_answer(
         question_text=next_question["question"],
         category=next_question["category"],
         difficulty=next_question["difficulty"],
+        response_mode=next_question.get("response_mode", "voice"),
         follow_up_of=current.id if next_question["category"] == "follow_up" else None,
     )
     interview.current_question_index = next_transcript.sequence_number
@@ -555,6 +565,20 @@ def submit_answer(
     session.commit()
     session.refresh(next_transcript)
     return {"is_complete": False, "current_question": next_transcript.model_dump()}
+
+
+@router.post("/session/interview/proctor-event")
+def record_proctor_event(payload: ProctorEventRequest, link: InterviewLink = Depends(get_candidate_link), session: Session = Depends(get_session)):
+    interview = _interview(session, link)
+    if not interview or interview.status != "in_progress":
+        raise HTTPException(status_code=400, detail="Interview is not active")
+    allowed = {"tab_hidden", "window_blur", "face_missing", "multiple_faces", "excessive_movement", "camera_interrupted", "microphone_interrupted"}
+    if payload.event_type not in allowed:
+        raise HTTPException(status_code=400, detail="Unsupported proctor event")
+    event = ProctorEvent(interview_id=interview.id, candidate_id=link.candidate_id, event_type=payload.event_type, severity=payload.severity, details=(payload.details or "")[:500])
+    session.add(event)
+    session.commit()
+    return {"recorded": True, "event_type": event.event_type}
 
 
 @router.post("/session/interview/complete")

@@ -117,6 +117,50 @@ Hiring Team
     return subject, body
 
 
+def recruiter_invitation_template(full_name: str, manager_name: str, onboarding_link: str) -> tuple[str, str, str]:
+    subject = "Complete your InterviewOS recruiter onboarding"
+    body = f"""Hi {full_name},
+
+{manager_name} invited you to join their InterviewOS hiring workspace as a Recruiter.
+
+Complete your secure onboarding here:
+{onboarding_link}
+
+This invitation expires in 72 hours.
+
+Best,
+InterviewOS
+"""
+    safe_name = html.escape(full_name)
+    safe_manager = html.escape(manager_name)
+    safe_link = html.escape(onboarding_link, quote=True)
+    html_body = f"""<!doctype html><html><body style="margin:0;padding:32px;background:#f6f7fc;font-family:Arial,sans-serif;color:#101427">
+<div style="max-width:560px;margin:auto;background:white;border:1px solid #e2e7f0;border-radius:18px;padding:32px">
+<h2 style="margin:0 0 16px">Welcome to InterviewOS</h2><p>Hi {safe_name},</p><p>{safe_manager} invited you to join their hiring workspace as a Recruiter.</p>
+<p style="margin:28px 0"><a href="{safe_link}" style="display:inline-block;padding:13px 20px;border-radius:10px;background:#5546e8;color:white;font-weight:700;text-decoration:none">Complete onboarding</a></p>
+<p style="font-size:13px;color:#64748b">This secure invitation expires in 72 hours.</p></div></body></html>"""
+    return subject, body, html_body
+
+
+def round_two_template(candidate: Candidate, job: JobDescription, link: str) -> tuple[str, str, str]:
+    subject = f"Round 2 technical interview for {job.job_title}"
+    body = f"""Hi {candidate.full_name},
+
+You have been invited to Round 2 for the {job.job_title} role at {job.company_name}.
+
+This is a proctored 20-minute technical interview with up to 12 questions and in-screen coding tasks. Camera, tab changes, focus changes, and unusual movement are recorded as proctoring events and shown to you during the session.
+
+Open your secure link:
+{link}
+
+Best,
+Hiring Team
+"""
+    safe_link = html.escape(link, quote=True)
+    html_body = _html_email_body(body).replace(html.escape(link), f'<a href="{safe_link}">{safe_link}</a>')
+    return subject, body, html_body
+
+
 def send_email(
     session: Session,
     *,

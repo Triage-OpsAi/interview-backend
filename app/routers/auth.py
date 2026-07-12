@@ -3,15 +3,17 @@ from sqlmodel import Session, select
 
 from ..database import get_session
 from ..dependencies import get_current_user
-from ..models import User
-from ..schemas import AuthLoginRequest, AuthRegisterRequest, AuthResponse
+from ..models import RecruiterInvitation, User
+from ..schemas import AuthLoginRequest, AuthProfileUpdate, AuthRegisterRequest, AuthResponse
 from ..security import generate_token, hash_password, hash_secret, utcnow, verify_password
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
-def _user_payload(user: User) -> dict:
-    return {"id": user.id, "full_name": user.full_name, "email": user.email, "role": user.role}
+def _user_payload(user: User, session: Session) -> dict:
+    membership = session.exec(select(RecruiterInvitation).where(RecruiterInvitation.invited_user_id == user.id)).first()
+    is_manager = user.role == "admin" or membership is None or membership.role == "manager"
+    return {"id": user.id, "full_name": user.full_name, "email": user.email, "role": "manager" if is_manager else "recruiter", "is_manager": is_manager}
 
 
 @router.post("/register", response_model=AuthResponse)
@@ -34,7 +36,7 @@ def register(payload: AuthRegisterRequest, session: Session = Depends(get_sessio
     session.add(user)
     session.commit()
     session.refresh(user)
-    return AuthResponse(access_token=token, user=_user_payload(user))
+    return AuthResponse(access_token=token, user=_user_payload(user, session))
 
 
 @router.post("/login", response_model=AuthResponse)
@@ -50,9 +52,18 @@ def login(payload: AuthLoginRequest, session: Session = Depends(get_session)):
     session.add(user)
     session.commit()
     session.refresh(user)
-    return AuthResponse(access_token=token, user=_user_payload(user))
+    return AuthResponse(access_token=token, user=_user_payload(user, session))
 
 
 @router.get("/me")
-def me(user: User = Depends(get_current_user)):
-    return _user_payload(user)
+def me(user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    return _user_payload(user, session)
+
+
+@router.patch("/profile")
+def update_profile(payload: AuthProfileUpdate, user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    user.full_name = payload.full_name.strip()
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return _user_payload(user, session)
