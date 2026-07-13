@@ -83,6 +83,33 @@ def _report_payload(session: Session, interview: Interview, candidate: Candidate
     }
 
 
+def _best_candidate_interview(session: Session, candidate_id: str) -> Interview | None:
+    """Prefer the latest report-bearing/completed interview over a newer empty round."""
+    latest_report = session.exec(
+        select(InterviewReport)
+        .where(InterviewReport.candidate_id == candidate_id)
+        .order_by(InterviewReport.created_at.desc())
+    ).first()
+    if latest_report:
+        reported_interview = session.get(Interview, latest_report.interview_id)
+        if reported_interview:
+            return reported_interview
+
+    completed_interview = session.exec(
+        select(Interview)
+        .where(Interview.candidate_id == candidate_id, Interview.status == "completed")
+        .order_by(Interview.completed_at.desc(), Interview.created_at.desc())
+    ).first()
+    if completed_interview:
+        return completed_interview
+
+    return session.exec(
+        select(Interview)
+        .where(Interview.candidate_id == candidate_id)
+        .order_by(Interview.created_at.desc())
+    ).first()
+
+
 @router.get("/interviews/{interview_id}")
 def get_report(interview_id: str, user: User = Depends(get_current_user), session: Session = Depends(get_session)):
     interview, candidate, job = _interview_context(session, interview_id, user)
@@ -96,9 +123,7 @@ def get_candidate_report(
     session: Session = Depends(get_session),
 ):
     candidate, job = _candidate_context(session, candidate_id, user)
-    interview = session.exec(
-        select(Interview).where(Interview.candidate_id == candidate.id).order_by(Interview.created_at.desc())
-    ).first()
+    interview = _best_candidate_interview(session, candidate.id)
     if not interview:
         raise HTTPException(status_code=404, detail="No interview found for candidate")
     return _report_payload(session, interview, candidate, job)

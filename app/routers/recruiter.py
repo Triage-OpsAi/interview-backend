@@ -6,7 +6,16 @@ from sqlmodel import Session, select
 from ..config import settings
 from ..database import get_session
 from ..dependencies import get_current_user
-from ..models import Candidate, CandidateProfile, Interview, InterviewLink, JobDescription, RecruiterInvitation, User
+from ..models import (
+    Candidate,
+    CandidateProfile,
+    Interview,
+    InterviewLink,
+    InterviewReport,
+    JobDescription,
+    RecruiterInvitation,
+    User,
+)
 from ..schemas import (
     CandidateCreateRequest,
     CandidateUpdateRequest,
@@ -65,6 +74,38 @@ def _job_payload(job: JobDescription) -> dict:
 
 def _candidate_payload(candidate: Candidate) -> dict:
     return candidate.model_dump()
+
+
+def _interview_history(session: Session, candidate_id: str) -> tuple[Interview | None, Interview | None, bool]:
+    """Return the current interview and the latest interview with completion evidence.
+
+    A generated report is authoritative completion evidence even for legacy rows
+    whose interview status was not persisted as ``completed``.  Keeping the
+    current and completed interviews separate also prevents a newly scheduled
+    round from hiding an earlier completed round and its report.
+    """
+    latest = session.exec(
+        select(Interview)
+        .where(Interview.candidate_id == candidate_id)
+        .order_by(Interview.created_at.desc())
+    ).first()
+    latest_report = session.exec(
+        select(InterviewReport)
+        .where(InterviewReport.candidate_id == candidate_id)
+        .order_by(InterviewReport.created_at.desc())
+    ).first()
+    reported_interview = session.get(Interview, latest_report.interview_id) if latest_report else None
+    completed_interview = session.exec(
+        select(Interview)
+        .where(Interview.candidate_id == candidate_id, Interview.status == "completed")
+        .order_by(Interview.completed_at.desc(), Interview.created_at.desc())
+    ).first()
+
+    if reported_interview and (
+        not completed_interview or reported_interview.created_at >= completed_interview.created_at
+    ):
+        return latest, reported_interview, True
+    return latest, completed_interview, bool(latest_report)
 
 
 @router.get("/statuses")
@@ -157,16 +198,16 @@ def list_candidates(job_id: str, user: User = Depends(get_current_user), session
     for candidate in candidates:
         if candidate.status not in workflow_statuses:
             continue
-        interview = session.exec(
-            select(Interview)
-            .where(Interview.candidate_id == candidate.id)
-            .order_by(Interview.created_at.desc())
-        ).first()
+        interview, completed_interview, report_available = _interview_history(session, candidate.id)
         has_link = session.exec(
             select(InterviewLink.id).where(InterviewLink.candidate_id == candidate.id)
         ).first() is not None
         expected = (
-            "Interview Completed" if interview and interview.status == "completed"
+            "Interview Completed"
+            if interview
+            and completed_interview
+            and interview.id == completed_interview.id
+            and (interview.status == "completed" or report_available)
             else "Interview Scheduled" if has_link
             else "Pending Interview"
         )
@@ -182,19 +223,18 @@ def list_candidates(job_id: str, user: User = Depends(get_current_user), session
         profile = session.exec(
             select(CandidateProfile).where(CandidateProfile.candidate_id == candidate.id)
         ).first()
-        interview = session.exec(
-            select(Interview)
-            .where(Interview.candidate_id == candidate.id)
-            .order_by(Interview.created_at.desc())
-        ).first()
+        interview, completed_interview, report_available = _interview_history(session, candidate.id)
+        display_interview = completed_interview or interview
         item = _candidate_payload(candidate)
         item.update({
             "serial_number": serial,
             "expected_ctc": profile.expected_ctc if profile else None,
-            "interviewed": bool(interview and interview.status == "completed"),
+            "interviewed": completed_interview is not None,
+            "interview_id": display_interview.id if display_interview else None,
+            "report_available": report_available,
             "interview_date": (
-                (interview.completed_at or interview.started_at).isoformat()
-                if interview and (interview.completed_at or interview.started_at)
+                (display_interview.completed_at or display_interview.started_at).isoformat()
+                if display_interview and (display_interview.completed_at or display_interview.started_at)
                 else None
             ),
         })
